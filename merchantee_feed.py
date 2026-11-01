@@ -2,10 +2,13 @@
 """
 Převodník Mergado feedu (projekt "Export Merchantee") do XML šablony Merchantee / Allegro.
 
-Vstup:  výstupní feed Mergada  <SHOP><SHOPITEM>...</SHOPITEM></SHOP>
-        s elementy SKU, EAN, BASE_PRICE, CAMPAIGN_PRICE_LIMIT
-        a BASE_PRICE_PLN / _CZK / _HUF, CAMPAIGN_PRICE_LIMIT_PLN / _CZK / _HUF.
+Vstup:  výstupní feed Mergada (<CHANNEL><ITEM>) s elementy SKU, EAN,
+        BASE_PRICE a CAMPAIGN_PRICE_LIMIT v EUR.
 Výstup: <MARKETPLACES><MARKETPLACE name="ALLEGRO_xx" currency="..."><item>...</item></MARKETPLACE></MARKETPLACES>
+
+Ceny pro PLN, CZK a HUF přepočítává tento skript z ceny v EUR podle kurzů
+v RATES níže (BASE_PRICE × kurz, CAMPAIGN_PRICE_LIMIT = BASE_PRICE × kurz × 0,95).
+Při změně kurzu stačí upravit RATES.
 
 Použití:
     python3 merchantee_feed.py                       # stáhne feed z Mergada, zapíše merchantee.xml
@@ -17,6 +20,7 @@ Jen standardní knihovna Pythonu 3.8+, žádné další balíčky.
 """
 
 import argparse
+import decimal
 import os
 import sys
 import tempfile
@@ -26,13 +30,45 @@ from xml.sax.saxutils import escape, quoteattr
 
 FEED_URL = "https://feeds.mergado.com/kalibersp-sk-export-merchantee-dbd954175c0386e02f26081acc847b58.xml"
 
-# Pořadí trhů ve výstupu a odkud se berou ceny. Sufix "" = základní elementy v EUR.
+# Kurz ČNB k 30. 10. 2026 (EUR 24,360 CZK; PLN 5,530 CZK; 100 HUF 6,649 CZK),
+# přepočteno na 1 EUR. Druhé číslo = počet desetinných míst ve výstupu.
+RATES = {
+    "EUR": ("1", 2),
+    "PLN": ("4.4051", 2),
+    "CZK": ("24.36", 0),
+    "HUF": ("366.3709", 0),
+}
+CAMPAIGN_FACTOR = decimal.Decimal("0.95")
+
+# Pořadí trhů ve výstupu (stejné jako ve vzoru Merchantee).
 MARKETPLACES = [
-    ("ALLEGRO_PL", "PLN", "_PLN"),
-    ("ALLEGRO_CZ", "CZK", "_CZK"),
-    ("ALLEGRO_SK", "EUR", ""),
-    ("ALLEGRO_HU", "HUF", "_HUF"),
+    ("ALLEGRO_PL", "PLN"),
+    ("ALLEGRO_CZ", "CZK"),
+    ("ALLEGRO_SK", "EUR"),
+    ("ALLEGRO_HU", "HUF"),
 ]
+
+
+def parse_price(value):
+    """'1 234,56' i '1234.56' -> Decimal; prázdná nebo neplatná hodnota -> None."""
+    value = (value or "").replace(" ", "").replace(" ", "").replace(",", ".")
+    try:
+        price = decimal.Decimal(value)
+    except decimal.InvalidOperation:
+        return None
+    return price if price > 0 else None
+
+
+def fmt(amount, places):
+    q = decimal.Decimal(1).scaleb(-places)
+    return str(amount.quantize(q, rounding=decimal.ROUND_HALF_UP))
+
+
+def prices_for(base_eur, currency):
+    """Vrátí (BASE_PRICE, CAMPAIGN_PRICE_LIMIT) jako texty pro danou měnu."""
+    rate, places = RATES[currency]
+    converted = base_eur * decimal.Decimal(rate)
+    return fmt(converted, places), fmt(converted * CAMPAIGN_FACTOR, places)
 
 
 def local(tag):
@@ -69,17 +105,13 @@ def read_items(source):
             root.clear()  # uvolní zpracované položky z paměti
 
 
-def item_xml(item, suffix):
-    base = item.get("BASE_PRICE" + suffix, "")
-    limit = item.get("CAMPAIGN_PRICE_LIMIT" + suffix, "")
-    if not base:
-        return None
-    lines = ["        <item>", "            <SKU>%s</SKU>" % escape(item.get("SKU", ""))]
+def item_xml(item, currency):
+    base, limit = prices_for(item["_base_eur"], currency)
+    lines = ["        <item>", "            <SKU>%s</SKU>" % escape(item["SKU"])]
     if item.get("EAN"):
         lines.append("            <EAN>%s</EAN>" % escape(item["EAN"]))
-    lines.append("            <BASE_PRICE>%s</BASE_PRICE>" % escape(base))
-    if limit:
-        lines.append("            <CAMPAIGN_PRICE_LIMIT>%s</CAMPAIGN_PRICE_LIMIT>" % escape(limit))
+    lines.append("            <BASE_PRICE>%s</BASE_PRICE>" % base)
+    lines.append("            <CAMPAIGN_PRICE_LIMIT>%s</CAMPAIGN_PRICE_LIMIT>" % limit)
     lines.append("        </item>")
     return "\n".join(lines)
 
@@ -89,24 +121,29 @@ def convert(source, output, skip_without_ean=False):
     print("Ve zdrojovém feedu: %d položek" % len(all_items))
     if all_items:
         print("Elementy první položky: %s" % ", ".join("%s=%r" % kv for kv in list(all_items[0].items())[:15]))
-    items = [
-        i for i in all_items
-        if i.get("SKU") and (i.get("EAN") or not skip_without_ean)
-    ]
+    items = []
+    skipped_price = 0
+    for i in all_items:
+        if not i.get("SKU") or (skip_without_ean and not i.get("EAN")):
+            continue
+        base_eur = parse_price(i.get("BASE_PRICE"))
+        if base_eur is None:
+            skipped_price += 1
+            continue
+        i["_base_eur"] = base_eur
+        items.append(i)
+    if skipped_price:
+        print("Vynecháno bez platné ceny: %d" % skipped_price)
     counts = {}
     tmp_fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(os.path.abspath(output)) or ".", suffix=".tmp")
     with os.fdopen(tmp_fd, "w", encoding="utf-8") as out:
         out.write('<?xml version="1.0" encoding="UTF-8"?>\n<MARKETPLACES>\n')
-        for name, currency, suffix in MARKETPLACES:
+        for name, currency in MARKETPLACES:
             out.write("    <MARKETPLACE name=%s currency=%s>\n" % (quoteattr(name), quoteattr(currency)))
-            n = 0
             for item in items:
-                xml = item_xml(item, suffix)
-                if xml:
-                    out.write(xml + "\n")
-                    n += 1
+                out.write(item_xml(item, currency) + "\n")
             out.write("    </MARKETPLACE>\n")
-            counts[name] = n
+            counts[name] = len(items)
         out.write("</MARKETPLACES>\n")
     os.replace(tmp_path, output)  # výstup se přepíše až po úspěšném dokončení
     return counts

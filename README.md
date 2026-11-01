@@ -7,15 +7,14 @@ XML feed pro Merchantee (dynamické ceny na Allegro) pro e-shop kalibersp.sk.
 ## Jak to funguje
 
 1. **Shoptet** exportuje produkty (CSV šablona `patternId=72`) včetně EANu.
-2. **Mergado**, projekt *Export Merchantee* (ID 363277), z nich každou hodinu v :30 počítá:
+2. **Mergado**, projekt *Export Merchantee* (ID 363277), z nich počítá:
    - `SKU` = kód produktu
    - `BASE_PRICE` = cena s DPH v EUR, `CAMPAIGN_PRICE_LIMIT` = cena × 0,95
-   - stejné ceny přepočtené do PLN, CZK a HUF (`BASE_PRICE_PLN`, `CAMPAIGN_PRICE_LIMIT_PLN`, …)
-3. **GitHub Actions** každou hodinu v :45 UTC spustí `merchantee_feed.py`. Skript stáhne feed z Mergada, převede ho do struktury `<MARKETPLACES>` (ALLEGRO_PL, ALLEGRO_CZ, ALLEGRO_SK, ALLEGRO_HU) a zveřejní ho přes GitHub Pages.
+3. **GitHub Actions** každou hodinu v :45 UTC spustí `merchantee_feed.py`. Skript stáhne feed z Mergada, přepočítá ceny z EUR do PLN, CZK a HUF, poskládá strukturu `<MARKETPLACES>` (ALLEGRO_PL, ALLEGRO_CZ, ALLEGRO_SK, ALLEGRO_HU) a zveřejní ji přes GitHub Pages.
 
 ## Kurzy
 
-Kurzy jsou napevno v pravidlech Mergada (kurz ČNB k 30. 10. 2026):
+Kurzy jsou v `merchantee_feed.py` v proměnné `RATES` (kurz ČNB k 30. 10. 2026). Při změně kurzu stačí upravit tam a commitnout, feed se hned přegeneruje.
 
 | Měna | Kurz z EUR | Zaokrouhlení |
 |---|---|---|
@@ -24,7 +23,6 @@ Kurzy jsou napevno v pravidlech Mergada (kurz ČNB k 30. 10. 2026):
 | EUR | — | 2 desetinná místa |
 | HUF | 366,3709 | celá čísla |
 
-Změna kurzu: v Mergadu uprav obě pravidla dané měny (`Merchantee XXX: BASE_PRICE` a `Merchantee XXX: CAMPAIGN_PRICE_LIMIT`).
 
 ## Ruční spuštění
 
