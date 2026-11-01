@@ -41,17 +41,32 @@ def local(tag):
 
 
 def read_items(source):
-    """Projde feed po položkách (nenačítá celý soubor do paměti)."""
-    for _, elem in ET.iterparse(source, events=("end",)):
-        if local(elem.tag) != "SHOPITEM":
+    """Projde feed po položkách (nenačítá celý soubor do paměti).
+
+    Položkou je každý přímý potomek kořene feedu, který má vlastní elementy
+    (Mergado XML: <CHANNEL><ITEM>, Heureka styl: <SHOP><SHOPITEM>).
+    """
+    depth = 0
+    root = None
+    for event, elem in ET.iterparse(source, events=("start", "end")):
+        if event == "start":
+            depth += 1
+            if depth == 1:
+                root = elem
             continue
-        values = {}
-        for child in elem:
-            name = local(child.tag)
-            if name not in values:  # bere první výskyt elementu
-                values[name] = (child.text or "").strip()
-        yield values
+        depth -= 1
+        if depth != 1:
+            continue
+        if len(elem):
+            values = {}
+            for child in elem:
+                name = local(child.tag)
+                if name not in values:  # bere první výskyt elementu
+                    values[name] = (child.text or "").strip()
+            yield values
         elem.clear()
+        if root is not None:
+            root.clear()  # uvolní zpracované položky z paměti
 
 
 def item_xml(item, suffix):
@@ -71,7 +86,7 @@ def item_xml(item, suffix):
 
 def convert(source, output, skip_without_ean=False):
     all_items = list(read_items(source))
-    print("Ve zdrojovém feedu: %d položek SHOPITEM" % len(all_items))
+    print("Ve zdrojovém feedu: %d položek" % len(all_items))
     if all_items:
         print("Elementy první položky: %s" % ", ".join("%s=%r" % kv for kv in list(all_items[0].items())[:15]))
     items = [
