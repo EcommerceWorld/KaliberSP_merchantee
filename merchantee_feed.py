@@ -70,8 +70,12 @@ def item_xml(item, suffix):
 
 
 def convert(source, output, skip_without_ean=False):
+    all_items = list(read_items(source))
+    print("Ve zdrojovém feedu: %d položek SHOPITEM" % len(all_items))
+    if all_items:
+        print("Elementy první položky: %s" % ", ".join("%s=%r" % kv for kv in list(all_items[0].items())[:15]))
     items = [
-        i for i in read_items(source)
+        i for i in all_items
         if i.get("SKU") and (i.get("EAN") or not skip_without_ean)
     ]
     counts = {}
@@ -103,6 +107,8 @@ def main():
     if args.source.startswith(("http://", "https://")):
         req = urllib.request.Request(args.source, headers={"User-Agent": "merchantee-feed/1.0"})
         source = urllib.request.urlopen(req, timeout=300)
+        print("Stahuji %s (HTTP %s, Last-Modified: %s)" % (
+            args.source, source.status, source.headers.get("Last-Modified", "?")))
     else:
         source = args.source
 
